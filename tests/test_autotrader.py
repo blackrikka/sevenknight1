@@ -9,9 +9,11 @@ from autotrader import risk
 from autotrader.brokers.base import BrokerError, Position
 from autotrader.brokers.kiwoom import KiwoomBroker, KiwoomClient, _num
 from autotrader.brokers.paper import PaperBroker, StaticQuotes
-from autotrader.config import Asset, Costs, JevConfig, RiskConfig, load_config
+from autotrader.brokers.http import RESPONSE_HEADERS
+from autotrader.config import Asset, Costs, JevConfig, RiskConfig, ScreenConfig, load_config
 from autotrader.engine import Runtime, run_cycle
 from autotrader.jev import JevGate
+from autotrader.screener import screen, to_universe_toml
 from autotrader.store import DailyCounter, PriceHistory
 from autotrader.strategy import Decision, decide
 
@@ -161,6 +163,61 @@ class KiwoomTest(unittest.TestCase):
         client = KiwoomClient("ak", "sk", transport=lambda u, h, b: {"token": "T"} if "oauth2" in u else {"return_code": 1, "return_msg": "x"})
         with self.assertRaises(BrokerError):
             client.price("111111")
+
+
+class KiwoomPagingTest(unittest.TestCase):
+    def test_follows_next_key(self):
+        sent = []
+
+        def transport(url, headers, body):
+            sent.append(headers)
+            if "oauth2" in url:
+                return {"token": "T"}
+            if "next-key" not in headers:
+                return {"list": [{"code": "1"}], RESPONSE_HEADERS: {"cont-yn": "Y", "next-key": "K2"}}
+            return {"list": [{"code": "2"}], RESPONSE_HEADERS: {"cont-yn": "N"}}
+
+        rows = KiwoomClient("a", "s", transport=transport).listed("8")
+        self.assertEqual([r["code"] for r in rows], ["1", "2"])
+        self.assertEqual((sent[-1]["cont-yn"], sent[-1]["next-key"], sent[-1]["api-id"]), ("Y", "K2", "ka10099"))
+
+
+class FakeListing:
+    def __init__(self, listings, quotes):
+        self.listings, self.quotes = listings, quotes
+
+    def listed(self, market):
+        return self.listings.get(market, [])
+
+    def quote(self, code):
+        return self.quotes[code]
+
+
+class ScreenerTest(unittest.TestCase):
+    CFG = ScreenConfig(max_price_krw=5000, markets=("etf", "kospi"), exclude_keywords=("인버스", "레버리지"),
+                       min_market_cap_krw=100_000_000_000, min_trade_value_krw=100_000_000, max_quote_checks=10)
+
+    def test_filters_and_ranks(self):
+        etf = [
+            {"code": "E1", "name": "좋은ETF", "lastPrice": "4500", "orderWarning": "0"},
+            {"code": "E2", "name": "KODEX 인버스", "lastPrice": "3000", "orderWarning": "0"},
+            {"code": "E3", "name": "비싼ETF", "lastPrice": "12000", "orderWarning": "0"},
+            {"code": "E4", "name": "한산ETF", "lastPrice": "2000", "orderWarning": "0"},
+        ]
+        stocks = [
+            {"code": "S1", "name": "큰회사", "lastPrice": "3000", "listCount": "200000000", "orderWarning": "0", "auditInfo": "정상"},
+            {"code": "S2", "name": "작은회사", "lastPrice": "3000", "listCount": "1000000", "orderWarning": "0"},
+            {"code": "S3", "name": "관리회사", "lastPrice": "3000", "listCount": "900000000", "orderWarning": "0", "auditInfo": "관리종목"},
+            {"code": "S4", "name": "경고회사", "lastPrice": "3000", "listCount": "900000000", "orderWarning": "3"},
+        ]
+        quotes = {"E1": {"price": 4500, "volume": 100_000}, "E4": {"price": 2000, "volume": 10},
+                  "S1": {"price": 3100, "volume": 1_000_000}}
+        result = screen(FakeListing({"8": etf, "0": stocks}, quotes), self.CFG, sleep=0)
+        self.assertEqual([(c.code, c.kind) for c in result.candidates], [("S1", "stock"), ("E1", "etf")])
+        self.assertEqual(result.scanned, 8)
+        self.assertEqual(result.rejected["관리·경고·정지 종목"], 2)
+        self.assertEqual(result.rejected["거래대금 부족"], 1)
+        self.assertIn('{ code = "E1", name = "좋은ETF", kind = "etf" }', to_universe_toml(result.candidates))
 
 
 class EngineTest(unittest.TestCase):

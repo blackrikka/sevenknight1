@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from autotrader.brokers.base import BrokerError, OrderResult, Position
-from autotrader.brokers.http import Transport, post_json
+from autotrader.brokers.http import RESPONSE_HEADERS, Transport, post_json
 
 HOSTS = {"real": "https://api.kiwoom.com", "mock": "https://mockapi.kiwoom.com"}
 
@@ -44,24 +44,45 @@ class KiwoomClient:
             self._token = data["token"]
         return self._token
 
-    def call(self, path: str, api_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    def call(self, path: str, api_id: str, body: dict[str, Any], extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
         headers = {
             "Content-Type": "application/json;charset=UTF-8",
             "authorization": f"Bearer {self._auth()}",
             "api-id": api_id,
+            **(extra_headers or {}),
         }
         data = self.transport(f"{self.base}{path}", headers, body)
         if str(data.get("return_code", "0")) != "0":
             raise BrokerError(f"키움 {api_id} 오류: {data.get('return_msg') or data}")
         return data
 
+    def call_pages(self, path: str, api_id: str, body: dict[str, Any], list_key: str, max_pages: int = 30) -> list[dict]:
+        """연속조회: 응답 헤더 cont-yn=Y 이면 next-key 로 다음 페이지를 이어 받는다."""
+        rows: list[dict] = []
+        extra: dict[str, str] = {}
+        for _ in range(max_pages):
+            data = self.call(path, api_id, body, extra)
+            rows += data.get(list_key) or []
+            resp_headers = data.get(RESPONSE_HEADERS) or {}
+            if resp_headers.get("cont-yn") != "Y" or not resp_headers.get("next-key"):
+                break
+            extra = {"cont-yn": "Y", "next-key": resp_headers["next-key"]}
+        return rows
+
     # --- 시세 ---
-    def price(self, code: str) -> int:
+    def quote(self, code: str) -> dict[str, int]:
         data = self.call("/api/dostk/stkinfo", "ka10001", {"stk_cd": code})  # 주식기본정보요청
         price = _num(data.get("cur_prc"))
         if price <= 0:
             raise BrokerError(f"{code} 현재가를 읽지 못했습니다: {data}")
-        return price
+        return {"price": price, "volume": _num(data.get("trde_qty"))}
+
+    def price(self, code: str) -> int:
+        return self.quote(code)["price"]
+
+    def listed(self, market: str) -> list[dict]:
+        """종목정보 리스트(ka10099). market: "0" 코스피, "10" 코스닥, "8" ETF."""
+        return self.call_pages("/api/dostk/stkinfo", "ka10099", {"mrkt_tp": market}, "list")
 
     def daily_closes(self, code: str, today: str) -> dict[str, int]:
         """일봉 종가 {YYYYMMDD: 가격}. 이동평균 계산을 처음부터 시작할 수 있게 해준다."""

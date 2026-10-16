@@ -59,6 +59,16 @@ class JevConfig:
 
 
 @dataclass(frozen=True)
+class ScreenConfig:
+    max_price_krw: int
+    markets: tuple[str, ...]  # "etf" | "kospi" | "kosdaq"
+    exclude_keywords: tuple[str, ...]
+    min_market_cap_krw: int  # 주식에만 적용
+    min_trade_value_krw: int
+    max_quote_checks: int
+
+
+@dataclass(frozen=True)
 class AccountConfig:
     name: str
     broker: str  # "kiwoom" | "toss"
@@ -76,6 +86,7 @@ class Config:
     costs: Costs
     jev: JevConfig
     accounts: tuple[AccountConfig, ...]
+    screen: ScreenConfig
     env: dict[str, str] = field(default_factory=dict)
 
     def secret(self, key: str) -> str:
@@ -121,7 +132,10 @@ def load_config(path: Path, dotenv: Path | None = None) -> Config:
     if not universe:
         raise ConfigError("strategy.universe 가 비어 있습니다")
 
-    r, c, j = raw["risk"], raw["costs"], raw.get("jev", {})
+    r, c, j, sc = raw["risk"], raw["costs"], raw.get("jev", {}), raw.get("screen", {})
+    markets = tuple(sc.get("markets", ["etf"]))
+    if not set(markets) <= {"etf", "kospi", "kosdaq"}:
+        raise ConfigError("screen.markets 는 etf / kospi / kosdaq 중에서 고르세요")
     accounts = tuple(
         AccountConfig(
             name=name,
@@ -164,5 +178,13 @@ def load_config(path: Path, dotenv: Path | None = None) -> Config:
             max_headlines=int(j.get("max_headlines", 15)),
         ),
         accounts=accounts,
+        screen=ScreenConfig(
+            max_price_krw=int(sc.get("max_price_krw", 5000)),
+            markets=markets,
+            exclude_keywords=tuple(sc.get("exclude_keywords", [])),
+            min_market_cap_krw=int(sc.get("min_market_cap_krw", 0)),
+            min_trade_value_krw=int(sc.get("min_trade_value_krw", 0)),
+            max_quote_checks=int(sc.get("max_quote_checks", 40)),
+        ),
         env=env,
     )

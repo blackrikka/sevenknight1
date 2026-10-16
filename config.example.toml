@@ -9,7 +9,8 @@ state_dir = "state"
 # 어제까지 N일 종가 평균보다 오늘 가격이 높으면 보유, 낮아지면 매도
 ma_days = 20
 # 매수 후보. 1주 가격이 계좌 예산보다 비싸면 자동으로 건너뜁니다.
-# 아래는 형식 예시일 뿐 추천이 아닙니다 — 5,000원 이하로 1주를 살 수 있는 종목을 직접 골라 넣으세요.
+# `python -m autotrader screen` 이 찾아준 5,000원 이하 종목으로 교체하세요.
+# 아래 KODEX 200 은 형식 예시일 뿐이며 5,000원보다 훨씬 비싸 실제로는 매수되지 않습니다.
 universe = [
   { code = "069500", name = "KODEX 200", kind = "etf" },
 ]
@@ -20,6 +21,16 @@ max_orders_per_day = 1      # 계좌별 하루 주문 횟수 (수수료 방어)
 stop_loss_pct = 0.07        # 평단 대비 -7% 면 매도
 trading_start = "09:10"     # 장 시작 직후 변동성 회피
 trading_end = "15:10"       # 동시호가(15:20~) 전
+
+[screen]
+# `python -m autotrader screen` 의 후보 기준
+max_price_krw = 5000
+markets = ["etf", "kospi", "kosdaq"]
+# 싼 ETF 는 인버스·레버리지가 많다. 매일 비율을 맞추는 구조라 오래 들고 있으면 손실이 커지기 쉬워 기본 제외
+exclude_keywords = ["레버리지", "인버스", "2X", "곱버스", "스팩"]
+min_market_cap_krw = 300_000_000_000  # 주식만: 시가총액 3,000억 원 이상
+min_trade_value_krw = 300_000_000     # 오늘 거래대금 3억 원 이상 (너무 한산한 종목 제외)
+max_quote_checks = 40                 # 거래대금 확인용 시세 조회 상한 (API 호출 한도 보호)
 
 [costs]
 # 증권사 이벤트·등급에 따라 다름. 본인 계좌 조건으로 확인 후 수정하세요.
