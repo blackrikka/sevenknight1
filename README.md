@@ -1,0 +1,100 @@
+# sevenknight1 — 토스증권·키움증권 소액 자동매매
+
+국내 ETF와 주식을 하루 한 번 자동으로 판단해 사고판다. 기본값은 **모의 매매(paper)** 다.
+실제 시세를 쓰지만 돈은 가상이다.
+
+## 먼저 짚고 갈 숫자
+
+| 항목 | 값 |
+|---|---|
+| 시작 자금 | 10,000원 (계좌당 5,000원) |
+| 연 10% 수익을 내면 (꽤 잘한 경우) | **1년에 약 1,000원**, 한 달 약 83원 |
+| Claude 구독료 | 한 달 약 2~3만 원 |
+| 1만 원으로 한 달 구독료를 벌려면 | 한 달 **+200% 이상** (현실적으로 불가능) |
+
+**이 봇으로 Claude 비용을 내는 것은 불가능하다.** 1만 원으로 그 정도를 노리는 전략은
+돈을 잃는 전략이다. 이 프로젝트는 이렇게 쓰는 것이 맞다.
+
+- 적은 돈으로 자동매매 시스템을 끝까지 만들어 보고 검증하는 **학습용**
+- 모의 매매로 몇 달 기록을 쌓은 뒤, 전략이 실제로 통하는지 보고 금액을 정하는 **실험용**
+
+그리고 5,000원짜리 계좌에서는 1주 가격이 5,000원을 넘는 종목을 **아예 살 수 없다**.
+가능하면 1만 원을 한 계좌(키움 권장)에 모으는 것을 추천한다.
+
+## 구조
+
+```
+cron (평일 장중 1회)
+  └─ python -m autotrader run
+       1. 시세 수집 (키움 REST: ka10001, 부족한 이력은 ka10081 일봉으로 채움)
+       2. 계좌별 전략 판단 (strategy.py)
+            보유 중: 손절선(-7%) 또는 20일선 이탈 → 매도
+            현금:   20일선 위 + 1주 살 수 있는 종목 중 가장 강한 것 → 매수 후보
+       3. 매수 후보면 Jev 에게 "오늘 헤드라인에 사면 안 될 악재가 있나?" 확인 (jev.py)
+       4. 리스크 게이트 (risk.py): 킬스위치 / 주말 / 시간 / 1회 한도 / 하루 주문 수 / 허용 종목
+       5. 주문 → state/events.jsonl 에 전부 기록
+```
+
+| 파일 | 역할 |
+|---|---|
+| `autotrader/strategy.py` | 이동평균 추세추종. 한 계좌에 한 종목, 하루 한 번 |
+| `autotrader/risk.py` | 주문 직전 마지막 안전장치 |
+| `autotrader/jev.py` | TypeSafe Jev 로 뉴스 악재 판단 (매수 거부권만 가짐) |
+| `autotrader/brokers/kiwoom.py` | 키움 REST API (모의투자/실계좌) |
+| `autotrader/brokers/toss.py` | 토스증권 자리. **실주문 미구현** (아래 참고) |
+| `autotrader/brokers/paper.py` | 모의 체결 (수수료·매도세 반영) |
+
+### Jev 를 쓰는 방식
+
+가격, 수량, 타이밍은 코드가 정한다. Jev 는 **매수 직전에 거부할지만** 판단한다.
+
+- `serious_negative` (Noul): 횡령, 거래정지, 상장폐지 위험, ETF 청산, 시장 급락 같은 악재가 헤드라인에 있는가. 확률이 `veto_threshold`(0.6) 이상이면 그날 매수를 보류한다.
+- `sentiment` (Score 0~4): 기록용이다. 나중에 실제 수익과 비교해서 쓸모 있는 신호인지 검증하는 데 쓴다.
+- 호출은 매수 후보가 생겼을 때만 한다. 하루 최대 3회이고, 같은 날 같은 종목은 캐시를 쓴다. 그래서 비용이 거의 들지 않는다.
+- 헤드라인은 `news/<종목코드>.txt`(한 줄에 하나)와 RSS(`rss_url_template`)에서 가져온다. 헤드라인이 없거나 Jev 호출에 실패하면 판단 없이 진행한다.
+
+## 검증된 것과 아닌 것
+
+| 항목 | 상태 |
+|---|---|
+| 전략, 리스크, 모의 체결, 엔진 | 단위 테스트 15개 통과 (`python -m unittest discover -s tests`) |
+| Jev 연동 | 실제 `typesafe-sdk` 0.7.5 에 모의 전송을 넣어 요청·응답 형식 확인 |
+| 키움 REST | api-id 와 필드명은 키움 REST 문서 기준으로 작성. **이 코드를 만든 환경에서는 공식 문서에 접속하지 못해 재확인하지 못했다.** 모의투자 서버에서 `check` 명령으로 꼭 먼저 확인할 것 |
+| 토스증권 | 2026년에 개인용 Open API(REST, OAuth2, 허용 IP 등록)가 열렸다고 알려져 있다. 공식 스펙을 확인할 수 없어 **실주문은 일부러 구현하지 않았다.** 토스 계좌는 paper 모드에서만 동작한다 |
+
+## 시작하기
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp config.example.toml config.toml   # universe(종목), 예산 수정
+cp .env.example .env                 # 키 입력
+```
+
+1. **키움 REST API 신청**: openapi.kiwoom.com 에서 앱키를 발급받고, 봇을 돌릴 PC의 공인 IP를 등록한다. 모의투자 신청도 함께 한다.
+2. **연결 확인 (주문 없음)**: `python -m autotrader check`
+3. **종목 고르기**: `config.toml` 의 `universe` 에 1주 가격이 계좌 예산 이하인 ETF나 종목을 넣는다. 예시로 들어 있는 KODEX 200 은 형식만 보여주는 것이다.
+4. **모의 매매 (최소 1~2개월)**: `mode = "paper"` 로 두고 cron 에 등록한다.
+   ```cron
+   # 평일 14:30 KST (서버 시간대가 KST 일 때)
+   30 14 * * 1-5 cd /path/to/sevenknight1 && .venv/bin/python -m autotrader run >> state/cron.log 2>&1
+   ```
+   결과는 `python -m autotrader status` 와 `state/events.jsonl` 에서 본다.
+5. **키움 모의투자 서버로 실주문 경로 시험**: `mode = "live"`, `server = "mock"`, `.env` 에 `AUTOTRADER_LIVE_CONFIRM=yes-i-accept-the-risk` 를 넣는다.
+6. **실계좌**: 4~5단계에서 납득할 만한 기록이 쌓였을 때만 `server = "real"` 로 바꾼다.
+
+토스를 실계좌로 쓰려면 토스증권 WTS > 설정 > Open API 에서 키를 발급받는다. 그다음 공식 문서를 보며
+`autotrader/brokers/toss.py` 의 `cash`, `positions`, `market_order` 를 채운다.
+
+## 안전장치
+
+- `python -m autotrader stop`: 킬스위치. 이후 모든 주문이 막힌다 (`resume` 으로 해제).
+- live 모드는 환경변수 확인 문구가 없으면 실행되지 않는다.
+- 1회 매수 한도, 계좌별 하루 주문 1회, 거래 시간(09:10~15:10, 평일), 허용 종목 목록, 계좌 예산 상한을 둔다.
+- 키와 상태 파일(`.env`, `config.toml`, `state/`)은 `.gitignore` 로 커밋에서 제외된다.
+
+## 주의
+
+투자 손실 책임은 본인에게 있다. 수수료율과 증권거래세율은 계좌 조건과 시행 시기에 따라 다르다.
+`config.toml` 의 `[costs]` 를 본인 조건에 맞게 확인한다. 공휴일 판단은 하지 않는다
+(휴장일에는 증권사가 주문을 거부한다).
