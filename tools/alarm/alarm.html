@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>alarm</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 14px sans-serif; }
+  #grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; }
+  #grid > div { aspect-ratio: 16 / 9; }
+  #log { padding: 8px; }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<div id="log">재생 준비 중… 소리가 안 나면 화면을 한 번 클릭하세요.</div>
+<script>
+  const VIDEO_ID = "dZyORXs3GmU";
+  const COUNT = 5;
+  const players = [];
+
+  function log(msg) { document.getElementById("log").textContent = msg; }
+
+  function onYouTubeIframeAPIReady() {
+    const grid = document.getElementById("grid");
+    for (let i = 0; i < COUNT; i++) {
+      const slot = document.createElement("div");
+      slot.id = "p" + i;
+      grid.appendChild(slot);
+      players.push(new YT.Player(slot.id, {
+        videoId: VIDEO_ID,
+        width: "100%",
+        height: "100%",
+        playerVars: { autoplay: 1, controls: 1, playsinline: 1 },
+        events: {
+          onReady: e => { e.target.unMute(); e.target.setVolume(100); e.target.playVideo(); },
+          // 끝나면 처음부터 다시 → 무한 반복
+          onStateChange: e => { if (e.data === YT.PlayerState.ENDED) { e.target.seekTo(0); e.target.playVideo(); } },
+          onError: e => log("재생 오류 " + e.data + " (101/150 이면 영상 주인이 외부 재생을 막아둔 것)"),
+        },
+      }));
+    }
+    log("5개 재생 중 · 볼륨 100 · 무한 반복. 끄려면 stop.bat 실행 또는 창 닫기");
+  }
+
+  // 자동재생이 막혔을 때 클릭 한 번으로 전부 소리 켜고 재생
+  document.addEventListener("click", () => players.forEach(p => { p.unMute(); p.setVolume(100); p.playVideo(); }));
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
